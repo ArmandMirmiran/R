@@ -1,0 +1,135 @@
+library(dplyr)
+library(readr)
+library(tidyverse)
+
+Test_Table <-
+  read_csv("Test Table.csv", col_types = cols(Date = col_date(format = "%d/%m/%Y")))
+
+Test_Table <- read_excel(".../TEST R.xlsx")
+##********************BEFORE USING******************************#
+#*************************************************************#
+#Rename the excel file to have the following names (Order in the Excel File does not matter)
+
+#Program
+#Episode
+#Date
+#StarTime
+#EndTime
+#NHE
+
+#Edit the time you want to compare. entire as a fraction :
+#0 is midnight of that day (start of day)
+#0.2 is 4:48 AM of that day
+#0.5 is noon of that day
+#1 is midnight (end of the day)
+#1.2 is 4:48 of that day (because of the 26h that we use)
+
+StartTime = 0.729166666666667  #5:30pm
+EndTime = 1.08 #11 pm
+
+##Code 
+
+FinalDataframe <-data.frame()
+
+#Create a UniqueID for Program and Episode
+Test_Table$Prg_Ep = paste(Test_Table$Program, Test_Table$Episode, sep = "")
+
+#Make sure the dates/times are stored as numbers(easier for sorting)
+Test_Table$Date = as.numeric(Test_Table$Date)
+Test_Table$StartTime = as.numeric(Test_Table$StartTime)
+Test_Table$EndTime = as.numeric(Test_Table$EndTime)
+
+#Create a duration column
+Test_Table$Duration = Test_Table$EndTime - Test_Table$StartTime
+
+#Check to see if the timeslot if valid (between StartTime and EndTime):
+#
+#Possibilities:
+#A)  show |     |       starts and end before StartTime      (Exlude)
+#B)     sh|ow   |       starts before StartTime and ends before EndTime   (Get %)
+#C)       | show|       starts after StartTime and end before EndTime    (Include)
+#D)       |   sh|ow     starts after StartTime and ends after EndTime   (Get %)
+#E)       |     | show  starts and end after EndTime      (Exlude)
+
+Test_Table$ValidTime = ifelse(Test_Table$EndTime < StartTime,
+                              0,
+                              #Condition A
+                              ifelse(
+                                Test_Table$StartTime > EndTime,
+                                0,
+                                #Condition E
+                                ifelse(
+                                  Test_Table$StartTime > StartTime &
+                                    Test_Table$EndTime < EndTime,
+                                  1,
+                                  #Condition C
+                                  ifelse(
+                                    Test_Table$StartTime < StartTime,
+                                    #Setup for Condition B
+                                    ifelse(((Test_Table$EndTime -
+                                               StartTime) / (Test_Table$Duration)
+                                    ) >= 0.5, 1, 0),
+                                    #Condition B
+                                    ifelse(Test_Table$StartTime <
+                                             EndTime, #Setup for Condition D
+                                           ifelse(((EndTime - Test_Table$StartTime) /
+                                                     (Test_Table$Duration)
+                                           ) >= 0.5, 1, 0), 0#Condition D))
+                                    )
+                                  )
+                                )))
+                              
+
+
+
+
+#This set breaks down the various UniqueIDs after sorting by cPrgram/spisode, date and start time
+Test_Table %>% arrange(Prg_Ep, Date, EndTime) %>% group_split(Prg_Ep) -> UniqueID
+
+
+#**********************start of Loop*****************
+
+
+
+for (i in 1:length(UniqueID)) {
+  #Select the items from the list of Program/Episode-> Each item in the list works with a single episode
+  Temp <- as.data.frame(UniqueID[[1]])
+  
+  #Find the first Airing of the episode and check to see which other episodes are within that week
+  FirstShowDay <- min(Temp$Date)
+  Temp$WithinWeek <- ifelse(Temp$Date - FirstShowDay <= 7, 1, 0)
+  
+  #Compare the Timeslot and date to see what can be considered for OFR
+  Temp$Good <-
+    ifelse(
+      Temp$ValidTime == 1 &
+        Temp$WithinWeek == 1,
+      "Good",
+      ifelse(Temp$WithinWeek == 1, "WithinWeek", "Exclude")
+    )
+  
+  #Generate the top 3 values that are in the right time slot/week (Good) and the top value outside  right time slot ("WithinWeek")
+  #compare the 3rd highest value of Good and WithinWeek to see which is better to take
+ Temp %>% slice_max(NHE) ->MaxGood
+   MaxGood <- slice_max(Temp$NHE)
+  
+  MaxGood2 <-
+    max(Temp$NHE[Temp$Good == "Good" &
+                   Temp$NHE != MaxGood], na.rm = TRUE)
+  MaxGood3 <-
+    max(Temp$NHE[Temp$Good == "Good" &
+                   Temp$NHE != MaxGood2 & Temp$NHE != MaxGood], na.rm = TRUE)
+  MaxWithin <- max(Temp$NHE[Temp$Good == "WithinWeek"], na.rm = TRUE)
+  MaxGood3 <- ifelse(MaxGood3 > MaxWithin, MaxGood3, MaxWithin)
+  Temp$OFR <-
+    ifelse(Temp$NHE == MaxGood |
+             Temp$NHE == MaxGood2 | Temp$NHE == MaxGood3,
+           "Y",
+           "N")
+  FinalDataframe <- rbind(FinalDataframe, Temp)
+}
+
+
+FinalDataframe %>% group_by(Program) %>% summarise(sum(NHE[OFR=="Y"]))%>% data.frame
+
+                              
